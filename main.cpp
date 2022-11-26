@@ -306,7 +306,7 @@ void GetNextToken(CompilerInfo *pci, Token *ptoken) {
 // assignstmt -> identifier := expr
 // readstmt -> read identifier
 // writestmt -> write expr
-// expr -> mathexpr [ (<|=) mathexpr ]
+// expr -> mathexpr [ (< | =) mathexpr ]
 // mathexpr -> term { (+|-) term }    left associative
 // term -> factor { (*|/) factor }    left associative
 // factor -> newexpr { ^ newexpr }    right associative
@@ -382,20 +382,267 @@ void PrintTree(TreeNode *node, int sh = 0) {
     if (node->sibling) PrintTree(node->sibling, sh);
 }
 
-#define MAX_FILE_PATH_LENGTH 1000
+struct ParseTree{
+    CompilerInfo *compilerInfo;
+    ParseInfo *parseInfo;
+    TreeNode *root;
 
+    ParseTree(CompilerInfo *ci){
+        compilerInfo = ci;
+        parseInfo = new ParseInfo;
+        GetNextToken(compilerInfo, &parseInfo->next_token);
+        root = RDParseProgram();
+    }
+
+    //Build the parse tree recursively
+    TreeNode *RDParseProgram();
+    TreeNode *RDParseStmtSeq();
+    TreeNode *RDParseStmt();
+    TreeNode *RDParseIfStmt();
+    TreeNode *RDParseRepeatStmt();
+    TreeNode *RDParseAssignmentStmt();
+    TreeNode *RDParseReadStmt();
+    TreeNode *RDParseWriteStmt();
+    TreeNode *RDParseExpr();
+    TreeNode *RDParseMathExpr();
+    TreeNode *RDParseTerm();
+    TreeNode *RDParseFactor();
+    TreeNode *RDParseNewExp();
+
+    //Match token type with current token, if worked properly nothing happens
+    //In case of error an error statement is printed to the terminal
+    void Match(const TokenType&);
+};
+
+void PrintError(const char* str){
+    printf("%s\n", str);
+}
+
+TreeNode *ParseTree::RDParseProgram() {
+    TreeNode *currNode = RDParseStmtSeq();
+    return currNode;
+}
+
+TreeNode *ParseTree::RDParseStmtSeq() {
+    TreeNode *currNode = RDParseStmt();
+    TreeNode *currSibling = currNode;
+    while (parseInfo->next_token.type == SEMI_COLON){
+        Match(SEMI_COLON);
+        TreeNode *nextSibling = RDParseStmt();
+        if (nextSibling){
+            while (currSibling->sibling) currSibling = currSibling->sibling;
+            currSibling->sibling = nextSibling;
+        }
+    }
+    return currNode;
+}
+
+TreeNode *ParseTree::RDParseStmt() {
+    TreeNode *currNode = nullptr;
+    switch (parseInfo->next_token.type) {
+        case IF:
+            currNode = RDParseIfStmt();
+            break;
+        case REPEAT:
+            currNode = RDParseRepeatStmt();
+            break;
+        case ID:
+            currNode = RDParseAssignmentStmt();
+            break;
+        case READ:
+            currNode = RDParseReadStmt();
+            break;
+        case WRITE:
+            currNode = RDParseWriteStmt();
+            break;
+        default:
+            char errorMessage[100];
+            sprintf(errorMessage, "Unexpected Statement at line %d", compilerInfo->in_file.cur_line_num);
+            PrintError(errorMessage);
+            break;
+    }
+    return currNode;
+}
+
+TreeNode *ParseTree::RDParseIfStmt() {
+    Match(IF);
+    TreeNode *currNode = new TreeNode;
+    currNode->node_kind = IF_NODE;
+    currNode->line_num = compilerInfo->in_file.cur_line_num;
+    currNode->child[0] = RDParseExpr();
+    Match(THEN);
+    currNode->child[1] = RDParseStmtSeq();
+    if (parseInfo->next_token.type == ELSE){
+        Match(ELSE);
+        currNode->child[2] = RDParseStmtSeq();
+    }
+    Match(END);
+    return currNode;
+}
+
+TreeNode *ParseTree::RDParseRepeatStmt() {
+    Match(REPEAT);
+    TreeNode *currNode = new TreeNode;
+    currNode->node_kind = REPEAT_NODE;
+    currNode->line_num = compilerInfo->in_file.cur_line_num;
+    currNode->child[0] = RDParseStmtSeq();
+    Match(UNTIL);
+    currNode->child[1] = RDParseExpr();
+    return currNode;
+}
+
+TreeNode *ParseTree::RDParseAssignmentStmt() {
+    TreeNode *currNode = new TreeNode;
+    currNode->node_kind = ASSIGN_NODE;
+    currNode->line_num = compilerInfo->in_file.cur_line_num;
+    currNode->expr_data_type = VOID;
+    currNode->id = new char[MAX_TOKEN_LEN];
+    strcpy(currNode->id, parseInfo->next_token.str);
+    Match(ID);
+    Match(ASSIGN);
+    currNode->child[0] = RDParseExpr();
+    return currNode;
+}
+
+TreeNode *ParseTree::RDParseReadStmt() {
+    Match(READ);
+    TreeNode *currNode = new TreeNode;
+    currNode->line_num = compilerInfo->in_file.cur_line_num;
+    currNode->node_kind = READ_NODE;
+    currNode->id = new char[MAX_TOKEN_LEN];
+    strcpy(currNode->id, parseInfo->next_token.str);
+    Match(ID);
+    return currNode;
+}
+
+TreeNode *ParseTree::RDParseWriteStmt() {
+    Match(WRITE);
+    TreeNode *currNode = new TreeNode;
+    currNode->line_num = compilerInfo->in_file.cur_line_num;
+    currNode->node_kind = WRITE_NODE;
+    currNode->id = new char[MAX_TOKEN_LEN];
+    strcpy(currNode->id, parseInfo->next_token.str);
+    Match(ID);
+    return currNode;
+}
+
+TreeNode *ParseTree::RDParseExpr() {
+    TreeNode *currNode = RDParseMathExpr();
+    if (parseInfo->next_token.type == LESS_THAN || parseInfo->next_token.type == EQUAL){
+        TreeNode *newNode = new TreeNode;
+        newNode->oper = parseInfo->next_token.type;
+        Match(newNode->oper);
+        newNode->node_kind = OPER_NODE;
+        newNode->line_num = compilerInfo->in_file.cur_line_num;
+        newNode->expr_data_type = BOOLEAN;
+        newNode->child[0] = currNode;
+        newNode->child[1] = RDParseMathExpr();
+        currNode = newNode;
+    }
+    return currNode;
+}
+
+TreeNode *ParseTree::RDParseMathExpr() {
+    TreeNode *currNode = RDParseTerm();
+    while (parseInfo->next_token.type == PLUS || parseInfo->next_token.type == MINUS){
+        TreeNode *newNode = new TreeNode;
+        newNode->oper = parseInfo->next_token.type;
+        Match(newNode->oper);
+        newNode->node_kind = OPER_NODE;
+        newNode->line_num = compilerInfo->in_file.cur_line_num;
+        newNode->expr_data_type = INTEGER;
+        newNode->child[0] = currNode;
+        newNode->child[1] = RDParseTerm();
+        currNode = newNode;
+    }
+    return currNode;
+}
+
+TreeNode *ParseTree::RDParseTerm() {
+    TreeNode *currNode = RDParseFactor();
+    while (parseInfo->next_token.type == TIMES || parseInfo->next_token.type == DIVIDE){
+        TreeNode *newNode = new TreeNode;
+        newNode->oper = parseInfo->next_token.type;
+        Match(newNode->oper);
+        newNode->node_kind = OPER_NODE;
+        newNode->line_num = compilerInfo->in_file.cur_line_num;
+        newNode->expr_data_type = INTEGER;
+        newNode->child[0] = currNode;
+        newNode->child[1] = RDParseFactor();
+        currNode = newNode;
+    }
+    return currNode;
+}
+
+TreeNode *ParseTree::RDParseFactor() {
+    TreeNode *currNode = RDParseNewExp();
+    while (parseInfo->next_token.type == POWER){
+        TreeNode *newNode = new TreeNode;
+        newNode->oper = parseInfo->next_token.type;
+        Match(newNode->oper);
+        newNode->node_kind = OPER_NODE;
+        newNode->line_num = compilerInfo->in_file.cur_line_num;
+        newNode->expr_data_type = INTEGER;
+        newNode->child[1] = currNode;
+        currNode = newNode;
+        currNode->child[0] = RDParseNewExp();
+    }
+    return currNode;
+}
+
+TreeNode *ParseTree::RDParseNewExp() {
+    TreeNode *currNode = nullptr;
+    switch (parseInfo->next_token.type){
+        case LEFT_BRACE:
+            Match(LEFT_BRACE);
+            currNode = RDParseMathExpr();
+            Match(RIGHT_BRACE);
+            break;
+        case NUM:
+            currNode = new TreeNode;
+            currNode->expr_data_type = INTEGER;
+            currNode->node_kind = NUM_NODE;
+            currNode->num = atoi(parseInfo->next_token.str);
+            currNode->line_num = compilerInfo->in_file.cur_line_num;
+            Match(NUM);
+            break;
+        case ID:
+            currNode = new TreeNode;
+            currNode->id = new char[MAX_TOKEN_LEN];
+            strcpy(currNode->id, parseInfo->next_token.str);
+            currNode->line_num = compilerInfo->in_file.cur_line_num;
+            currNode->node_kind = ID_NODE;
+            currNode->expr_data_type = INTEGER;
+            Match(ID);
+            break;
+        default:
+            char *res = new char[100];
+            sprintf(res, "Unexpected expression at line %d", compilerInfo->in_file.cur_line_num);
+            PrintError(res);
+    }
+    return currNode;
+}
+
+void ParseTree::Match(const TokenType &token){
+    if (parseInfo->next_token.type == token){
+        GetNextToken(compilerInfo, &parseInfo->next_token);
+    }
+    else {
+        char *res = new char[100];
+        sprintf(res, "Unexpected token [%s] at line %d", parseInfo->next_token.str, compilerInfo->in_file.cur_line_num);
+        PrintError(res);
+    }
+}
+
+#define MAX_FILE_PATH_LENGTH 1000
 
 int main(){
     char* inFile = new char[MAX_FILE_PATH_LENGTH];
     scanf("%s", inFile);
 
     CompilerInfo compInfo(inFile, "output.txt", "error.txt");
-    Token *currToken = new Token;
-    while(currToken->type!=ENDFILE)
-    {
-        GetNextToken(&compInfo, currToken);
-
-    }
+    ParseTree *parseTree = new ParseTree(&compInfo);
+    PrintTree(parseTree->root);
     return 0;
 }
 
